@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>nessaPadel // AI Scorekeeper</title>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection@2.1.3/dist/pose-detection.min.js"></script>
+<style>
+  :root{
+    --bg:#0a0e14;
+    --panel:#0f1620;
+    --line:#1c2836;
+    --ink:#e8f0f7;
+    --dim:#5f7285;
+    --a:#00e5c4;        /* team cyan */
+    --b:#ff5d3b;        /* team orange */
+    --grid:rgba(0,229,196,.06);
+    --mono:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:
+      radial-gradient(1200px 600px at 50% -10%, rgba(0,229,196,.05), transparent),
+      var(--bg);
+    color:var(--ink);
+    font-family:var(--mono);
+    -webkit-font-smoothing:antialiased;
+    overflow-x:hidden;
+  }
+  .wrap{max-width:1180px;margin:0 auto;padding:18px 16px 40px}
+  /* Header */
+  header{display:flex;align-items:baseline;gap:14px;border-bottom:1px solid var(--line);padding-bottom:12px;margin-bottom:16px;flex-wrap:wrap}
+  .logo{font-weight:800;letter-spacing:.28em;font-size:15px}
+  .logo b{color:var(--a)}
+  .tag{color:var(--dim);font-size:11px;letter-spacing:.18em}
+  .stat{margin-left:auto;display:flex;gap:16px;font-size:11px;color:var(--dim);letter-spacing:.1em}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#3a4b5c;margin-right:6px;vertical-align:middle}
+  .dot.live{background:var(--a);box-shadow:0 0 10px var(--a);animation:pulse 1.4s infinite}
+  @keyframes pulse{50%{opacity:.35}}
+
+  /* Scoreboard */
+  .board{display:grid;grid-template-columns:1fr auto 1fr;gap:10px;margin-bottom:16px}
+  .side{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:16px 18px;position:relative;overflow:hidden}
+  .side::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px}
+  .side.A::before{background:var(--a)}
+  .side.B::before{background:var(--b)}
+  .side.serve{box-shadow:inset 0 0 0 1px currentColor}
+  .side.A.serve{color:var(--a)}
+  .side.B.serve{color:var(--b)}
+  .side .who{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+  .name{background:none;border:none;color:var(--ink);font-family:var(--mono);font-size:13px;letter-spacing:.12em;font-weight:700;width:62%;outline:none}
+  .name:focus{color:var(--a)}
+  .srv{font-size:9px;letter-spacing:.2em;color:var(--dim);border:1px solid var(--line);padding:2px 7px;border-radius:99px}
+  .side.serve .srv{border-color:currentColor;color:currentColor}
+  .score{font-size:78px;font-weight:800;line-height:.9;letter-spacing:-.04em;font-variant-numeric:tabular-nums}
+  .side.A .score{color:var(--a)}
+  .side.B .score{color:var(--b)}
+  .sets{font-size:11px;color:var(--dim);letter-spacing:.15em;margin-top:6px}
+  .sets span{color:var(--ink)}
+  .setline{font-size:10px;color:var(--dim);letter-spacing:.12em;margin-top:4px}
+  .mid{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;min-width:110px}
+  .vs{font-size:11px;color:var(--dim);letter-spacing:.3em}
+  .to{font-size:10px;color:var(--dim);text-align:center}
+  .phase{font-size:11px;letter-spacing:.16em;padding:4px 10px;border:1px solid var(--line);border-radius:99px;color:var(--dim);text-align:center}
+  .phase.hot{color:var(--b);border-color:var(--b)}
+  .phase.golden{color:#ffcf3b;border-color:#ffcf3b}
+
+  .ptrow{display:grid;grid-template-columns:1fr auto 1fr;gap:10px;margin-bottom:16px}
+  button.pt{padding:14px;font-family:var(--mono);font-size:13px;letter-spacing:.14em;font-weight:700;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:4px;cursor:pointer;transition:.12s}
+  button.pt.A:hover{border-color:var(--a);color:var(--a);box-shadow:0 0 0 1px var(--a)}
+  button.pt.B:hover{border-color:var(--b);color:var(--b);box-shadow:0 0 0 1px var(--b)}
+  button.pt:active{transform:translateY(1px)}
+  .undo{background:none;border:1px solid var(--line);color:var(--dim);border-radius:4px;padding:0 16px;font-family:var(--mono);font-size:11px;letter-spacing:.14em;cursor:pointer}
+  .undo:hover{color:var(--ink);border-color:var(--dim)}
+
+  /* Main: video + telemetry */
+  .grid2{display:grid;grid-template-columns:1.6fr 1fr;gap:14px}
+  @media(max-width:860px){.grid2{grid-template-columns:1fr}.board{grid-template-columns:1fr}.mid{order:-1;flex-direction:row;padding:8px;flex-wrap:wrap}}
+  .feed{background:#000;border:1px solid var(--line);border-radius:4px;position:relative;overflow:hidden;aspect-ratio:16/10}
+  .feed video,.feed canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+  .feed video{transform:scaleX(-1)}
+  .feed canvas{transform:scaleX(-1)}
+  .feed .empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:var(--dim);text-align:center;padding:20px}
+  .feed .empty svg{opacity:.4}
+  .cam-btn{background:var(--a);color:#04120f;border:none;padding:12px 22px;border-radius:3px;font-family:var(--mono);font-weight:800;letter-spacing:.14em;font-size:12px;cursor:pointer}
+  .cam-btn:hover{box-shadow:0 0 18px rgba(0,229,196,.5)}
+  .overlay-tag{position:absolute;top:10px;left:10px;z-index:3;font-size:10px;letter-spacing:.18em;color:var(--a);background:rgba(4,18,15,.7);padding:4px 9px;border-radius:3px;border:1px solid rgba(0,229,196,.3)}
+  .calib-badge{position:absolute;bottom:10px;left:10px;z-index:3;font-size:9px;letter-spacing:.14em;color:var(--dim);background:rgba(4,18,15,.7);padding:4px 9px;border-radius:3px;border:1px solid var(--line)}
+  .calib-badge.set{color:var(--a);border-color:rgba(0,229,196,.3)}
+  .feed.calibrating{cursor:crosshair}
+  .calib-hint{position:absolute;inset:0;z-index:4;display:none;align-items:flex-start;justify-content:center;pointer-events:none;padding-top:14px}
+  .feed.calibrating .calib-hint{display:flex}
+  .calib-hint span{background:rgba(4,18,15,.85);color:var(--a);border:1px solid rgba(0,229,196,.4);padding:6px 12px;border-radius:3px;font-size:11px;letter-spacing:.12em}
+  .speedpop{position:absolute;top:10px;right:10px;z-index:3;font-size:11px;letter-spacing:.1em;color:var(--b);background:rgba(20,6,4,.75);padding:5px 10px;border-radius:3px;border:1px solid rgba(255,93,59,.35);font-weight:700;opacity:0;transition:.2s}
+  .speedpop.show{opacity:1}
+
+  .tele{display:flex;flex-direction:column;gap:12px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:14px}
+  .card h3{font-size:10px;letter-spacing:.24em;color:var(--dim);font-weight:600;margin-bottom:12px;display:flex;justify-content:space-between}
+  .big{font-size:44px;font-weight:800;letter-spacing:-.03em;color:var(--a);line-height:1;font-variant-numeric:tabular-nums}
+  .unit{font-size:13px;color:var(--dim);margin-left:6px;letter-spacing:.1em}
+  .sub{font-size:11px;color:var(--dim);margin-top:8px;letter-spacing:.06em}
+  .kv{display:flex;justify-content:space-between;font-size:12px;padding:5px 0;border-bottom:1px solid var(--line);letter-spacing:.06em}
+  .kv:last-child{border:none}
+  .kv .v{color:var(--ink);font-weight:700}
+  .spark{height:46px;width:100%;margin-top:4px}
+  .disc{font-size:10px;color:var(--dim);line-height:1.6;letter-spacing:.03em;border-top:1px dashed var(--line);padding-top:10px;margin-top:6px}
+  .toggle{display:flex;gap:8px;flex-wrap:wrap}
+  .toggle button{flex:1;min-width:70px;font-family:var(--mono);font-size:10px;letter-spacing:.1em;padding:8px;border:1px solid var(--line);background:none;color:var(--dim);border-radius:3px;cursor:pointer}
+  .toggle button.on{color:var(--a);border-color:var(--a)}
+  .toggle button.gold.on{color:#ffcf3b;border-color:#ffcf3b}
+  .banner{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(6,10,15,.92);z-index:50;flex-direction:column;gap:18px;text-align:center;padding:24px}
+  .banner.show{display:flex}
+  .banner .w{font-size:34px;font-weight:800;letter-spacing:.1em;color:var(--a)}
+  .banner .s{color:var(--dim);letter-spacing:.14em;font-size:13px}
+  .banner button{background:var(--a);color:#04120f;border:none;padding:12px 26px;border-radius:3px;font-family:var(--mono);font-weight:800;letter-spacing:.14em;cursor:pointer}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">nessa<b>Padel</b></div>
+    <div class="tag">MATCH SCOREKEEPER · POSE + MOTION TELEMETRY</div>
+    <div class="stat">
+      <span><i class="dot" id="camDot"></i>FEED</span>
+      <span><i class="dot" id="modelDot"></i>MODEL</span>
+      <span id="fpsTxt">— FPS</span>
+    </div>
+  </header>
+
+  <!-- Scoreboard -->
+  <div class="board">
+    <div class="side A serve" id="sideA">
+      <div class="who">
+        <input class="name" id="nameA" value="TEAM A" spellcheck="false" maxlength="14">
+        <span class="srv">SERVE</span>
+      </div>
+      <div class="score" id="scoreA">0</div>
+      <div class="sets">SETS <span id="setsA">0</span> · GAMES <span id="gamesA">0</span></div>
+      <div class="setline" id="setlineA"></div>
+    </div>
+    <div class="mid">
+      <div class="vs">VS</div>
+      <div class="phase" id="phase">SET 1 · GAME 1</div>
+      <div class="to" id="serveWho">A serving</div>
+    </div>
+    <div class="side B" id="sideB">
+      <div class="who">
+        <input class="name" id="nameB" value="TEAM B" spellcheck="false" maxlength="14">
+        <span class="srv">SERVE</span>
+      </div>
+      <div class="score" id="scoreB">0</div>
+      <div class="sets">SETS <span id="setsB">0</span> · GAMES <span id="gamesB">0</span></div>
+      <div class="setline" id="setlineB"></div>
+    </div>
+  </div>
+
+  <div class="ptrow">
+    <button class="pt A" onclick="point('A')">+ POINT A</button>
+    <button class="undo" onclick="undo()">↶ UNDO</button>
+    <button class="pt B" onclick="point('B')">+ POINT B</button>
+  </div>
+
+  <!-- Feed + telemetry -->
+  <div class="grid2">
+    <div class="feed" id="feed">
+      <video id="video" playsinline muted></video>
+      <canvas id="canvas"></canvas>
+      <div class="overlay-tag" id="camTag" style="display:none">● TRACKING</div>
+      <div class="speedpop" id="speedPop">— km/h</div>
+      <div class="calib-badge" id="calibBadge">SCALE: DEFAULT (frame≈10m)</div>
+      <div class="calib-hint"><span id="calibHint">TAP POINT 1</span></div>
+      <div class="empty" id="emptyState">
+        <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+        <div style="letter-spacing:.14em;font-size:12px">CAMERA OFFLINE</div>
+        <div style="font-size:10px;max-width:260px;line-height:1.6">Point the camera side-on to the court, behind the glass. Detection runs fully on-device — nothing leaves your browser.</div>
+        <button class="cam-btn" onclick="startCam()">START CAMERA</button>
+      </div>
+    </div>
+
+    <div class="tele">
+      <div class="card">
+        <h3>PEAK SHOT SPEED <span id="lastLbl">last: —</span></h3>
+        <div><span class="big" id="peakSpeed">0</span><span class="unit">km/h*</span></div>
+        <canvas class="spark" id="spark"></canvas>
+        <div class="sub">Rolling estimate from frame-to-frame motion of the fastest tracked object.</div>
+      </div>
+      <div class="card">
+        <h3>RALLY TELEMETRY</h3>
+        <div class="kv"><span>Players detected</span><span class="v" id="mPlayers">0</span></div>
+        <div class="kv"><span>Rally length</span><span class="v" id="mRally">0 s</span></div>
+        <div class="kv"><span>Shots this rally</span><span class="v" id="mShots">0</span></div>
+        <div class="kv"><span>Longest rally</span><span class="v" id="mLong">0 s</span></div>
+        <div class="kv"><span>Total points</span><span class="v" id="mPts">0</span></div>
+      </div>
+      <div class="card">
+        <h3>RULES</h3>
+        <div class="toggle">
+          <button id="tGolden" class="gold on" onclick="togGolden()">GOLDEN POINT</button>
+          <button id="tTie" class="on" onclick="togTie()">TIE-BREAK @ 6-6</button>
+        </div>
+        <div class="sub" id="ruleSub">Golden point ON: at 40–40 the next point wins the game (no advantage).</div>
+      </div>
+      <div class="card">
+        <h3>OVERLAYS</h3>
+        <div class="toggle">
+          <button id="tPose" class="on" onclick="tog('pose')">SKELETON</button>
+          <button id="tMotion" class="on" onclick="tog('motion')">MOTION</button>
+          <button id="tTrail" class="on" onclick="tog('trail')">TRAIL</button>
+        </div>
+        <div class="toggle" style="margin-top:8px">
+          <button id="calibBtn" onclick="startCalib()">◎ CALIBRATE SCALE</button>
+          <button onclick="resetCalib()">RESET</button>
+        </div>
+        <div class="disc">*Speed is an <b>approximate</b> estimate. Browser webcams (~30 FPS) can't reliably freeze a padel ball that leaves the racket at 100+ km/h, so treat numbers as relative, not competition-grade. For true tracking use a 120+ FPS camera with a YOLO model.</div>
+      </div>
+    </div>
+  </div>
+  <footer style="border-top:1px solid var(--line);margin-top:28px;padding-top:14px;text-align:center;color:var(--dim);font-size:10px;letter-spacing:.2em">
+    <b style="color:var(--a)">nessaPadel</b> · BUILT BY RR
+    <div style="margin-top:6px;font-size:16px">🎾</div>
+  </footer>
+</div>
+
+<div class="banner" id="banner">
+  <div class="w" id="bannerW">GAME</div>
+  <div class="s" id="bannerS"></div>
+  <button onclick="dismissBanner()">CONTINUE</button>
+</div>
+
+<script>
+/* ============ SCORING ENGINE (padel: points → games → sets) ============ */
+// Point ladder within a game: 0,15,30,40. Deuce at 40-40.
+// Golden point ON  → next point wins at deuce.
+// Golden point OFF → advantage scoring (win by 2 clear points).
+// Games: first to 6, win by 2. Tie-break at 6-6 (first to 7, win by 2) if enabled;
+//        otherwise the set continues on games until a 2-game lead.
+// Sets: best of 3 → first team to 2 sets wins the match.
+const PT_LABELS=['0','15','30','40'];
+const S={
+  pA:0,pB:0,        // point index inside current game (0..3 = 0/15/30/40; 4+ used for advantage)
+  gA:0,gB:0,        // games in current set
+  sA:0,sB:0,        // sets won
+  set:1, game:1,
+  serve:'A',
+  tie:false,        // currently in a tie-break?
+  over:false
+};
+let setHistory=[];  // completed set scores: [{a,b}, ...]
+let hist=[];        // full-state undo stack
+let totalPts=0;
+let goldenPoint=true, tieBreakOn=true;
+const SetsToWin=2;
+
+function fmtPoint(mine,theirs,server){
+  if(S.tie){ return String(mine); }              // tie-break shows raw points
+  if(mine<=3 && theirs<=3 && !(mine===3&&theirs===3)) return PT_LABELS[mine];
+  // deuce / advantage territory (only reached when goldenPoint is OFF)
+  if(mine===theirs) return '40';                 // deuce
+  return mine>theirs ? 'AD' : '40';
+}
+
+function render(){
+  scoreA.textContent=fmtPoint(S.pA,S.pB);
+  scoreB.textContent=fmtPoint(S.pB,S.pA);
+  setsA.textContent=S.sA; setsB.textContent=S.sB;
+  gamesA.textContent=S.gA; gamesB.textContent=S.gB;
+  sideA.classList.toggle('serve',S.serve==='A');
+  sideB.classList.toggle('serve',S.serve==='B');
+  serveWho.textContent=(S.serve==='A'?nameA.value:nameB.value)+' serving';
+
+  // completed-set history line
+  const line=setHistory.map(s=>s.a+'-'+s.b).join('  ');
+  setlineA.textContent=line?('SETS: '+setHistory.map(s=>s.a).join(' ')):'';
+  setlineB.textContent=line?('SETS: '+setHistory.map(s=>s.b).join(' ')):'';
+
+  // phase label + hot/golden states
+  let label = S.tie ? ('SET '+S.set+' · TIE-BREAK') : ('SET '+S.set+' · GAME '+S.game);
+  phase.textContent=label;
+  const deuce=(!S.tie && S.pA>=3 && S.pB>=3 && S.pA===S.pB);
+  const golden=(deuce && goldenPoint);
+  phase.classList.toggle('golden',golden);
+  phase.classList.toggle('hot',!golden && (S.tie ? (S.pA>=6||S.pB>=6) : deuce));
+  mPts.textContent=totalPts;
+}
+
+function point(who){
+  if(S.over) return;
+  hist.push(JSON.parse(JSON.stringify({S,setHistory,totalPts})));
+  totalPts++;
+  endRally();
+  if(S.tie) tiePoint(who);
+  else gamePoint(who);
+  render();
+}
+
+function gamePoint(who){
+  const mineK = who==='A'?'pA':'pB';
+  const oppK  = who==='A'?'pB':'pA';
+  let mine=S[mineK], opp=S[oppK];
+  mine++;
+  // decide game win
+  if(goldenPoint){
+    // win at 4 points unless both at 3 (deuce) — at deuce, next point (mine=4) wins outright
+    if(mine>=4){ S[mineK]=mine; return winGame(who); }
+    S[mineK]=mine; return;
+  } else {
+    // advantage scoring: need >=4 and 2 clear
+    S[mineK]=mine;
+    if(mine>=4 && mine-opp>=2){ return winGame(who); }
+    // clamp deuce so labels stay sane (both stuck at 3 = 40-40)
+    if(mine>4 && opp>=3){ S[mineK]=Math.min(mine,opp+2); }
+  }
+}
+
+function tiePoint(who){
+  const mineK=who==='A'?'pA':'pB';
+  const oppK =who==='A'?'pB':'pA';
+  S[mineK]++;
+  const mine=S[mineK], opp=S[oppK];
+  if(mine>=7 && mine-opp>=2){ return winSetTieBreak(who); }
+}
+
+function winGame(who){
+  // reset points, award a game, rotate serve, check set
+  S.pA=0;S.pB=0;
+  const gK=who==='A'?'gA':'gB';
+  S[gK]++;
+  S.serve = S.serve==='A'?'B':'A';   // serve alternates every game in padel
+  S.game++;
+  checkSet(who);
+}
+
+function checkSet(who){
+  const a=S.gA,b=S.gB;
+  // tie-break trigger
+  if(tieBreakOn && a===6 && b===6){ S.tie=true; return; }
+  const setWin=(x,y)=> x>=6 && x-y>=2;
+  if(setWin(a,b)){ return closeSet('A',a,b); }
+  if(setWin(b,a)){ return closeSet('B',a,b); }
+}
+
+function winSetTieBreak(who){
+  // record 7-6 style set; tie-break winner takes the set
+  const a = who==='A'? 7:6;
+  const b = who==='A'? 6:7;
+  S.tie=false;
+  closeSet(who,a,b);
+}
+
+function closeSet(who,a,b){
+  setHistory.push({a,b});
+  const sK=who==='A'?'sA':'sB';
+  S[sK]++;
+  // reset for next set
+  S.gA=0;S.gB=0;S.pA=0;S.pB=0;S.tie=false;
+  if(S[sK]>=SetsToWin){
+    S.over=true;
+    showBanner((who==='A'?nameA.value:nameB.value)+' WIN','MATCH · '+setHistory.map(s=>s.a+'-'+s.b).join('  '));
+  } else {
+    S.set++; S.game=1;
+    showBanner('SET '+(S.set-1),(who==='A'?nameA.value:nameB.value)+' take the set '+a+'–'+b);
+  }
+}
+
+function undo(){
+  const p=hist.pop(); if(!p)return;
+  Object.assign(S,p.S);
+  setHistory=p.setHistory;
+  totalPts=p.totalPts;
+  banner.classList.remove('show');
+  render();
+}
+function showBanner(w,s){ bannerW.textContent=w; bannerS.textContent=s; banner.classList.add('show'); }
+function dismissBanner(){ banner.classList.remove('show'); render(); }
+
+function togGolden(){
+  goldenPoint=!goldenPoint;
+  tGolden.classList.toggle('on',goldenPoint);
+  ruleSub.textContent = goldenPoint
+    ? 'Golden point ON: at 40–40 the next point wins the game (no advantage).'
+    : 'Advantage scoring: at 40–40 a team must win two points in a row to take the game.';
+  // if turning golden off mid-deuce, leave points as-is; render handles labels
+  render();
+}
+function togTie(){
+  tieBreakOn=!tieBreakOn;
+  tTie.classList.toggle('on',tieBreakOn);
+  if(!tieBreakOn && S.tie){ S.tie=false; } // fall back to advantage-on-games
+  render();
+}
+
+nameA.oninput=nameB.oninput=render;
+render();
+
+document.addEventListener('keydown',e=>{
+  if(document.activeElement.tagName==='INPUT')return;
+  if(e.key==='a'||e.key==='ArrowLeft')point('A');
+  if(e.key==='l'||e.key==='ArrowRight')point('B');
+  if(e.key==='u')undo();
+});
+
+/* ============ RALLY TELEMETRY ============ */
+let rallyStart=null, shots=0, longest=0;
+function beginRally(){ if(!rallyStart){rallyStart=performance.now(); shots=0;} }
+function endRally(){
+  if(rallyStart){ const d=(performance.now()-rallyStart)/1000; longest=Math.max(longest,d); mLong.textContent=longest.toFixed(1)+' s'; }
+  rallyStart=null; shots=0; mShots.textContent=0; mRally.textContent='0 s';
+}
+function tickRally(){ if(rallyStart){ mRally.textContent=((performance.now()-rallyStart)/1000).toFixed(1)+' s'; } }
+
+/* ============ CAMERA + DETECTION ============ */
+const video=document.getElementById('video');
+const canvas=document.getElementById('canvas');
+const ctx=canvas.getContext('2d');
+let detector=null, running=false, prevGray=null;
+const show={pose:true,motion:true,trail:true};
+function tog(k){ show[k]=!show[k]; document.getElementById('t'+k[0].toUpperCase()+k.slice(1)).classList.toggle('on',show[k]); }
+
+// speed calibration
+// mPerNormX = real metres represented by 1.0 of normalised frame width.
+// Default assumes the court WIDTH (10 m) spans the full frame when shooting side-on.
+let mPerNormX=10.0;
+let calibMode=0, calibP1=null; // 0=off,1=await p1,2=await p2
+
+const COURT_LINES=[
+  {label:'Court width, side glass to side glass',m:10.00},
+  {label:'Court length, back glass to back glass',m:20.00},
+  {label:'Half court, net to back glass',m:10.00},
+  {label:'Net to service line',m:6.95},
+  {label:'Service line to back glass',m:3.05},
+  {label:'Service box width (half court width)',m:5.00},
+];
+
+function startCalib(){
+  if(!running){ calibHint.textContent='START CAMERA FIRST'; feed.classList.add('calibrating'); setTimeout(()=>feed.classList.remove('calibrating'),1200); return; }
+  calibMode=1; calibP1=null;
+  feed.classList.add('calibrating'); calibHint.textContent='TAP FIRST POINT ON A COURT LINE';
+  calibBtn.classList.add('on');
+}
+function resetCalib(){
+  mPerNormX=10.0; calibMode=0; calibP1=null;
+  feed.classList.remove('calibrating'); calibBtn.classList.remove('on');
+  calibBadge.textContent='SCALE: DEFAULT (frame≈10m)'; calibBadge.classList.remove('set');
+}
+// feed is display-flipped (scaleX(-1)); convert a click to the un-flipped normalised coord
+function feedClick(e){
+  if(!calibMode)return;
+  const r=feed.getBoundingClientRect();
+  let nx=(e.clientX-r.left)/r.width;
+  nx=1-nx;                       // undo mirror
+  const ny=(e.clientY-r.top)/r.height;
+  if(calibMode===1){ calibP1={x:nx,y:ny}; calibMode=2; calibHint.textContent='TAP SECOND POINT'; }
+  else if(calibMode===2){
+    const p2={x:nx,y:ny};
+    const aspect=canvas.height/canvas.width||0.625;
+    const dxn=(p2.x-calibP1.x), dyn=(p2.y-calibP1.y)*aspect;
+    const normDist=Math.hypot(dxn,dyn);       // distance in normalised-X units
+    finishCalib(normDist);
+  }
+}
+feed.addEventListener('click',feedClick);
+
+function finishCalib(normDist){
+  feed.classList.remove('calibrating'); calibBtn.classList.remove('on');
+  const list=COURT_LINES.map((l,i)=>`${i+1}) ${l.label} — ${l.m} m`).join('\n');
+  let real=prompt('Real-world distance between the two points (metres).\n\nCommon padel references:\n'+list+'\n\nEnter a number, or a menu index 1–'+COURT_LINES.length+':','10.0');
+  if(real===null){ calibMode=0; return; }
+  real=real.trim();
+  let m=null;
+  if(/^[1-6]$/.test(real) && COURT_LINES[+real-1]) m=COURT_LINES[+real-1].m;
+  else m=parseFloat(real);
+  if(!m||m<=0||!normDist){ calibMode=0; calibHint.textContent=''; return; }
+  mPerNormX=m/normDist;
+  calibMode=0;
+  calibBadge.textContent='SCALE: '+(mPerNormX).toFixed(2)+' m/frame · SET';
+  calibBadge.classList.add('set');
+}
+
+let peak=0, speedHist=[], trail=[], lastMotionT=0;
+
+async function startCam(){
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({video:{width:960,height:600,facingMode:'environment'}});
+    video.srcObject=stream;
+    await video.play();
+    emptyState.style.display='none'; camTag.style.display='block';
+    camDot.classList.add('live');
+    canvas.width=video.videoWidth; canvas.height=video.videoHeight;
+    await loadModel();
+    running=true; loop();
+  }catch(err){ emptyState.innerHTML='<div style="color:var(--b);letter-spacing:.1em">CAMERA BLOCKED</div><div style="font-size:10px;max-width:260px;line-height:1.6">Allow camera access, or your browser/device may not support it. Nothing is uploaded.</div>'; }
+}
+async function loadModel(){
+  try{
+    detector=await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet,{modelType:poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING});
+    modelDot.classList.add('live');
+  }catch(e){ modelDot.style.background='#ff5d3b'; }
+}
+
+// motion grid for fast-object (ball) estimate
+let W=0,H=0,gw=0,gh=0;
+const off=document.createElement('canvas'); const octx=off.getContext('2d',{willReadFrequently:true});
+let lastFrame=performance.now(), frames=0, fps=0;
+
+async function loop(){
+  if(!running)return;
+  const now=performance.now();
+  frames++; if(now-lastFrame>500){ fps=Math.round(frames*1000/(now-lastFrame)); fpsTxt.textContent=fps+' FPS'; frames=0; lastFrame=now; }
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  // --- motion detection (downscaled) ---
+  const dw=160, dh=Math.round(160*canvas.height/canvas.width);
+  off.width=dw; off.height=dh;
+  octx.drawImage(video,0,0,dw,dh);
+  const cur=octx.getImageData(0,0,dw,dh);
+  let fastX=-1,fastY=-1,fastMag=0, moved=0;
+  if(prevGray){
+    for(let y=0;y<dh;y+=2)for(let x=0;x<dw;x+=2){
+      const i=(y*dw+x)*4;
+      const g=(cur.data[i]*0.3+cur.data[i+1]*0.59+cur.data[i+2]*0.11);
+      const d=Math.abs(g-prevGray[y*dw+x]);
+      if(d>34){ moved++; if(d>fastMag){fastMag=d;fastX=x/dw;fastY=y/dh;} }
+    }
+  }
+  const gray=new Float32Array(dw*dh);
+  for(let y=0;y<dh;y++)for(let x=0;x<dw;x++){ const i=(y*dw+x)*4; gray[y*dw+x]=cur.data[i]*0.3+cur.data[i+1]*0.59+cur.data[i+2]*0.11; }
+  prevGray=gray;
+
+  // speed estimate from displacement of fast point between frames
+  if(fastX>=0 && lastMotionT){
+    const dt=(now-lastMotionT)/1000;
+    if(trail.length){
+      const p=trail[trail.length-1];
+      const dxm=(fastX-p.x)*mPerNormX, dym=(fastY-p.y)*mPerNormX*(canvas.height/canvas.width);
+      const dist=Math.hypot(dxm,dym);
+      const v=dist/dt*3.6; // km/h
+      if(v>4 && v<250){
+        beginRally();
+        if(v>peak){ peak=v; peakSpeed.textContent=Math.round(v); lastLbl.textContent='last: '+Math.round(v)+' km/h'; }
+        speedPop.textContent=Math.round(v)+' km/h'; speedPop.classList.add('show');
+        speedHist.push(v); if(speedHist.length>40)speedHist.shift(); drawSpark();
+        // count a "shot" on strong motion spikes with cooldown
+        if(v>peak*0.6 && now-(loop._lastShot||0)>600){ shots++; mShots.textContent=shots; loop._lastShot=now; }
+      }
+    }
+  }
+  if(fastMag>40){ trail.push({x:fastX,y:fastY,t:now}); if(trail.length>14)trail.shift(); }
+  else if(trail.length&&now-trail[trail.length-1].t>400){ trail=[]; speedPop.classList.remove('show'); }
+  lastMotionT=now;
+
+  // --- draw motion heat + fast marker ---
+  if(show.motion && fastX>=0){
+    const px=fastX*canvas.width, py=fastY*canvas.height;
+    ctx.strokeStyle='#ff5d3b'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.arc(px,py,14,0,7); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(px-22,py);ctx.lineTo(px-6,py);ctx.moveTo(px+6,py);ctx.lineTo(px+22,py); ctx.stroke();
+  }
+  // --- trail ---
+  if(show.trail && trail.length>1){
+    ctx.beginPath();
+    for(let i=0;i<trail.length;i++){ const p=trail[i]; const x=p.x*canvas.width,y=p.y*canvas.height; i?ctx.lineTo(x,y):ctx.moveTo(x,y); }
+    ctx.strokeStyle='rgba(255,93,59,.55)'; ctx.lineWidth=2.5; ctx.stroke();
+  }
+
+  // --- pose detection ---
+  let np=0;
+  if(detector){
+    try{
+      const poses=await detector.estimatePoses(video,{flipHorizontal:false});
+      np=poses.length;
+      if(show.pose)for(const p of poses)drawSkeleton(p);
+    }catch(e){}
+  }
+  mPlayers.textContent=np;
+  tickRally();
+  requestAnimationFrame(loop);
+}
+
+const EDGES=[[5,7],[7,9],[6,8],[8,10],[5,6],[5,11],[6,12],[11,12],[11,13],[13,15],[12,14],[14,16],[0,5],[0,6]];
+function drawSkeleton(p){
+  const k=p.keypoints;
+  ctx.lineWidth=2; ctx.strokeStyle='rgba(0,229,196,.85)'; ctx.fillStyle='#00e5c4';
+  for(const [a,b] of EDGES){ const ka=k[a],kb=k[b]; if(ka.score>.3&&kb.score>.3){ ctx.beginPath();ctx.moveTo(ka.x,ka.y);ctx.lineTo(kb.x,kb.y);ctx.stroke(); } }
+  for(const pt of k){ if(pt.score>.3){ ctx.beginPath();ctx.arc(pt.x,pt.y,3,0,7);ctx.fill(); } }
+}
+
+// sparkline
+const sc=document.getElementById('spark'), sctx=sc.getContext('2d');
+function drawSpark(){
+  sc.width=sc.clientWidth*2; sc.height=sc.clientHeight*2; sctx.scale(1,1);
+  sctx.clearRect(0,0,sc.width,sc.height);
+  if(speedHist.length<2)return;
+  const max=Math.max(...speedHist,10);
+  sctx.beginPath();
+  speedHist.forEach((v,i)=>{ const x=i/(speedHist.length-1)*sc.width; const y=sc.height-(v/max)*sc.height*0.9-3; i?sctx.lineTo(x,y):sctx.moveTo(x,y); });
+  sctx.strokeStyle='#00e5c4'; sctx.lineWidth=2.5; sctx.stroke();
+  sctx.lineTo(sc.width,sc.height); sctx.lineTo(0,sc.height); sctx.closePath();
+  sctx.fillStyle='rgba(0,229,196,.08)'; sctx.fill();
+}
+</script>
+</body>
+</html>
